@@ -37,6 +37,7 @@ class OCRApp(ctk.CTk):
         self.output_folder = ctk.StringVar(value="")
         self.balance_sheet = ctk.BooleanVar(value=False)
         self.is_running = False
+        self.had_error = False
         self.stop_event = threading.Event()
         self.log_queue: queue.Queue = queue.Queue()
 
@@ -316,6 +317,7 @@ class OCRApp(ctk.CTk):
         os.makedirs(output_path, exist_ok=True)
 
         self.is_running = True
+        self.had_error = False
         self.stop_event.clear()
         self._progress_bar.set(0)
         self._progress_label.configure(text="Initialising...", text_color=self.CLR_TEXT)
@@ -348,6 +350,7 @@ class OCRApp(ctk.CTk):
         try:
             pipeline.run(progress_callback=progress_cb)
         except Exception as exc:
+            self.had_error = True
             self.log_queue.put(
                 (
                     "ERROR",
@@ -372,6 +375,9 @@ class OCRApp(ctk.CTk):
         if self.stop_event.is_set():
             self._progress_label.configure(text="Terminated by operator.", text_color=self.CLR_WARN)
             self._append_log("WARNING", "Pipeline sequence aborted.")
+        elif self.had_error:
+            self._progress_label.configure(text="Failed. Check error log.", text_color=self.CLR_ERROR)
+            self._append_log("ERROR", "Pipeline failed. Please fix the error above and run again.")
         else:
             self._progress_bar.set(1.0)
             self._progress_label.configure(text="✅ Sequence Complete", text_color=self.CLR_SUCCESS)

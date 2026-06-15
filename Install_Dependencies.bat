@@ -47,6 +47,27 @@ if not exist "OCR_Input" mkdir "OCR_Input"
 if not exist "OCR_Output" mkdir "OCR_Output"
 
 echo.
+echo Running local OCR pre-flight checks...
+
+if not exist "tessdata\eng.traineddata" (
+    echo WARNING: tessdata\eng.traineddata is missing.
+    echo Copy the full tessdata folder into this project before running OCR.
+)
+if not exist "tessdata\hin.traineddata" echo WARNING: tessdata\hin.traineddata is missing.
+if not exist "tessdata\mar.traineddata" echo WARNING: tessdata\mar.traineddata is missing.
+if not exist "tessdata\guj.traineddata" echo WARNING: tessdata\guj.traineddata is missing.
+if not exist "tessdata\osd.traineddata" echo WARNING: tessdata\osd.traineddata is missing.
+
+if exist "C:\Program Files\Tesseract-OCR\tesseract.exe" (
+    echo Tesseract found at C:\Program Files\Tesseract-OCR\tesseract.exe
+) else if exist "C:\Program Files (x86)\Tesseract-OCR\tesseract.exe" (
+    echo Tesseract found at C:\Program Files (x86)\Tesseract-OCR\tesseract.exe
+) else (
+    echo WARNING: Tesseract OCR was not found at the default Windows install path.
+    echo Install Tesseract before running OCR.
+)
+
+echo.
 echo ====================================================
 echo Installation Complete!
 echo You can now use Run_OCR_Utility.bat to launch the app.

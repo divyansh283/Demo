@@ -69,6 +69,14 @@ Run_OCR_Utility.bat
 The GUI opens. You can use the default folders or select different folders from
 the interface.
 
+If anything fails, double-click:
+
+```text
+Check_Setup.bat
+```
+
+It checks Python, Tesseract, `tessdata`, and required project files.
+
 ## Azure Setup
 
 Azure is optional for basic local OCR, but required for best table extraction.
@@ -123,6 +131,7 @@ the BAT file.
 Before creating the zip, do not include:
 
 ```text
+.git
 .venv
 __pycache__
 *.pyc
@@ -136,6 +145,7 @@ Zip the project folder after cleanup. On the other Windows system:
 2. Install Python and Tesseract.
 3. Double-click `Install_Dependencies.bat`.
 4. Double-click `Run_OCR_Utility.bat`.
+5. If there is an error, double-click `Check_Setup.bat`.
 
 ## Troubleshooting
 
@@ -150,6 +160,16 @@ Install Tesseract to:
 ```text
 C:\Program Files\Tesseract-OCR\tesseract.exe
 ```
+
+`Failed loading language 'eng'`
+
+Make sure this file exists:
+
+```text
+RCB_Utility\tessdata\eng.traineddata
+```
+
+If it is missing, your zip did not include the full `tessdata` folder.
 
 Azure errors
 

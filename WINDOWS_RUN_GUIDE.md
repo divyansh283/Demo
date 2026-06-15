@@ -111,6 +111,7 @@ On Linux, run this from the parent folder:
 ```bash
 cd /home/admin1/Divyansh/RCB_Utility-20260615T061304Z-3-001
 zip -r RCB_Utility_Windows.zip RCB_Utility \
+  -x "RCB_Utility/.git/*" \
   -x "RCB_Utility/.venv/*" \
   -x "RCB_Utility/__pycache__/*" \
   -x "RCB_Utility/*/__pycache__/*" \
@@ -127,6 +128,7 @@ RCB_Utility\tessdata\eng.traineddata
 RCB_Utility\src\main.py
 RCB_Utility\Run_OCR_Utility.bat
 RCB_Utility\Install_Dependencies.bat
+RCB_Utility\Check_Setup.bat
 ```
 
 ## 4. Windows System Setup
@@ -184,6 +186,14 @@ Then double-click:
 ```text
 Run_OCR_Utility.bat
 ```
+
+If there is any error, double-click:
+
+```text
+Check_Setup.bat
+```
+
+It checks Python, Tesseract, `tessdata`, required project files, and folders.
 
 ## 6. How To Use The App
 
@@ -341,6 +351,7 @@ Add PDF/JPG/PNG/TIFF/HEIC files to the input folder.
 Confirm these exist:
 
 ```text
+Check_Setup.bat
 Run_OCR_Utility.bat
 Install_Dependencies.bat
 requirements.txt
@@ -358,6 +369,7 @@ tessdata\osd.traineddata
 Do not include:
 
 ```text
+.git
 .venv
 __pycache__
 *.pyc
