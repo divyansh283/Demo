@@ -1,0 +1,26 @@
+# OCR Utility - Python dependencies
+# Install with: python -m pip install -r requirements.txt
+
+# GUI
+customtkinter>=5.2.0
+
+# PDF handling (digital text extraction + rendering)
+PyMuPDF>=1.23.0
+
+# Local OCR
+pytesseract>=0.3.10
+Pillow>=10.0.0
+opencv-python>=4.8.0
+pillow-heif>=0.15.0
+
+# Cloud OCR + Table extraction
+azure-ai-documentintelligence>=1.0.0
+azure-core>=1.29.0
+
+# Data handling
+pandas>=2.0.0
+tabulate>=0.9.0
+
+# Optional validation/decoding helpers used when available
+pyspellchecker>=0.7.0
+pyzbar>=0.1.9
