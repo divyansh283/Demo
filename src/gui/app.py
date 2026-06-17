@@ -314,7 +314,12 @@ class OCRApp(ctk.CTk):
         if not output_path:
             self._append_log("ERROR", "Output directory is missing. Please select a valid folder.")
             return
-        os.makedirs(output_path, exist_ok=True)
+        if not os.path.isdir(output_path):
+            self._append_log(
+                "ERROR",
+                f"Output directory does not exist: '{output_path}'. Please create or select an existing folder.",
+            )
+            return
 
         self.is_running = True
         self.had_error = False

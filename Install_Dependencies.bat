@@ -43,9 +43,6 @@ echo Installing required libraries...
 python -m pip install -r requirements.txt
 if errorlevel 1 goto install_failed
 
-if not exist "OCR_Input" mkdir "OCR_Input"
-if not exist "OCR_Output" mkdir "OCR_Output"
-
 echo.
 echo Running local OCR pre-flight checks...
 

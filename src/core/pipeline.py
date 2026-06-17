@@ -71,8 +71,17 @@ class OCRPipeline:
         # State for reporting
         self.current_metrics = []
 
-        # Ensure output directory exists
-        os.makedirs(self.output_folder, exist_ok=True)
+        if not os.path.isdir(self.input_folder):
+            raise FileNotFoundError(
+                f"Input folder does not exist: '{self.input_folder}'. "
+                "Please select an existing input directory."
+            )
+
+        if not os.path.isdir(self.output_folder):
+            raise FileNotFoundError(
+                f"Output folder does not exist: '{self.output_folder}'. "
+                "Please select an existing output directory."
+            )
 
         # Exception logger (plain-text file)
         self.exc_log = create_exception_logger(self.output_folder)
@@ -717,8 +726,6 @@ class OCRPipeline:
         )
 
         if combined:
-            self._save_text_output(src, combined, status)
-            self._save_tables_csv(src, all_dfs, status)
             self._save_structured_payload(src, combined, all_dfs, status, exc_entry)
 
         self._generate_pdf_report(src, total_time, total_pages, combined, status)
@@ -796,8 +803,6 @@ class OCRPipeline:
         )
 
         if combined_text:
-            self._save_text_output(src, combined_text, status)
-            self._save_tables_csv(src, page_dfs, status)
             self._save_structured_payload(src, combined_text, page_dfs, status, exc_entry)
 
         self._generate_pdf_report(

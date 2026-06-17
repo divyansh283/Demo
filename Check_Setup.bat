@@ -62,8 +62,8 @@ if exist "FreeSans.ttf" (echo PASS: FreeSans.ttf) else (echo WARN: FreeSans.ttf 
 echo.
 
 echo [6] Input/output folders
-if exist "OCR_Input" (echo PASS: OCR_Input) else (echo WARN: OCR_Input missing; Run_OCR_Utility.bat will create it)
-if exist "OCR_Output" (echo PASS: OCR_Output) else (echo WARN: OCR_Output missing; Run_OCR_Utility.bat will create it)
+if exist "OCR_Input" (echo PASS: OCR_Input) else (echo FAIL: OCR_Input missing; please create it before running the utility)
+if exist "OCR_Output" (echo PASS: OCR_Output) else (echo FAIL: OCR_Output missing; please create it before running the utility)
 echo.
 
 echo ====================================================

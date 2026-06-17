@@ -4,9 +4,10 @@ cd /d "%~dp0"
 
 echo Starting OCR Utility...
 
-if not exist "OCR_Input" mkdir "OCR_Input"
-if not exist "OCR_Output" mkdir "OCR_Output"
+echo Note: The GUI can be opened without existing OCR_Input / OCR_Output folders.
+echo You can select existing folders from the app before processing.
 
+echo.
 if not exist "tessdata\eng.traineddata" (
     echo.
     echo ERROR: Tesseract language data is missing.
@@ -48,11 +49,21 @@ if not defined TESSERACT_CMD (
 )
 
 if exist ".venv\Scripts\python.exe" (
+    set "PYTHONPATH=%CD%"
+    set "TESSDATA_PREFIX=%CD%\tessdata"
     ".venv\Scripts\python.exe" src\main.py
+    if errorlevel 1 (
+        echo.
+        echo ERROR: OCR application failed to start.
+        echo Check the error message above.
+        pause
+        exit /b 1
+    )
 ) else (
-    echo WARNING: .venv was not found. Using system Python.
-    echo Run Install_Dependencies.bat first if the app does not start.
-    python src\main.py
+    echo.
+    echo ERROR: Virtual environment not found at .venv\Scripts\python.exe
+    echo Please run Install_Dependencies.bat first.
+    echo.
+    pause
+    exit /b 1
 )
-
-pause

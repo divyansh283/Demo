@@ -400,7 +400,6 @@ def build_production_gate_report(exceptions_list: list[dict]) -> dict:
 
 
 def create_exception_logger(output_folder: str) -> logging.Logger:
-    Path(output_folder).mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_path = os.path.join(output_folder, f"OCR_ExceptionLog_{timestamp}.txt")
 
