@@ -27,7 +27,7 @@ class OCRApp(ctk.CTk):
         # ---- Window setup ----
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
-        self.title("OCR Utility — Enterprise Hybrid Processor")
+        self.title("OCR Utility - Enterprise Hybrid Processor")
         self.geometry("1100x750")
         self.minsize(900, 650)
         self.configure(fg_color=self.CLR_BG)
@@ -332,7 +332,7 @@ class OCRApp(ctk.CTk):
     def _request_stop(self):
         if self.is_running:
             self.stop_event.set()
-            self._append_log("WARNING", "Halt requested — gracefully exiting after current file...")
+            self._append_log("WARNING", "Halt requested - gracefully exiting after current file...")
             self._stop_btn.configure(state="disabled", text="⏳ HALTING...")
 
     def _run_pipeline(self):

@@ -15,11 +15,25 @@ from PIL import Image
 
 from azure.ai.documentintelligence import DocumentIntelligenceClient
 from src.utils.constants import TARGET_DPI, SUPPORTED_FILES
-from src.utils.helpers import create_exception_logger, detect_table_from_text, extract_qr_payload, validate_critical_entities
-from src.utils.image_processing import prepare_image_for_azure, mask_stamp_ink, remove_grid_lines
+from src.utils.helpers import (
+    _triage_and_rotate,
+    build_production_gate_report,
+    classify_page,
+    create_exception_logger,
+    detect_table_from_text,
+    extract_qr_payload,
+    text_layer_diagnostics,
+    validate_critical_entities,
+    validate_text_layer,
+)
+from src.utils.image_processing import (
+    normalize_image_for_ocr,
+    prepare_image_for_azure,
+    mask_stamp_ink,
+    remove_grid_lines,
+)
 from src.engines.tesseract_engine import run_tesseract
 from src.engines.azure_engine import run_azure_ocr
-from src.utils.helpers import _triage_and_rotate, validate_text_layer
 from src.core.reconciliation import reconcile_document
 
 class OCRPipeline:
@@ -43,19 +57,6 @@ class OCRPipeline:
 
         # Settings
         self.tess_lang = cfg.get("LANGUAGES", "tesseract_lang", fallback="eng+hin+mar")
-        self.risk_thresh = cfg.getfloat(
-            "THRESHOLDS", "high_risk_threshold", fallback=60.0
-        )
-        self.warn_thresh = cfg.getfloat(
-            "THRESHOLDS", "azure_fallback_threshold", fallback=93.0
-        )
-
-        self._az_client_cache: DocumentIntelligenceClient | None = None
-
-        # State for reporting
-        self.current_metrics = []
-
-        # Resolve config values
         self.input_folder = cfg.get("FOLDERS", "input_folder").strip()
         self.output_folder = cfg.get("FOLDERS", "output_folder").strip()
         self.azure_ep = os.environ.get(
@@ -67,13 +68,16 @@ class OCRPipeline:
         self.warn_thresh = cfg.getint("THRESHOLDS", "warning_threshold", fallback=60)
         self.risk_thresh = cfg.getint("THRESHOLDS", "high_risk_threshold", fallback=30)
 
+        # State for reporting
+        self.current_metrics = []
+
         # Ensure output directory exists
         os.makedirs(self.output_folder, exist_ok=True)
 
         # Exception logger (plain-text file)
         self.exc_log = create_exception_logger(self.output_folder)
 
-        # Lazy Azure client — only instantiated on first cloud call
+        # Lazy Azure client; only instantiated on first cloud call
         self._azure_client: DocumentIntelligenceClient | None = None
 
         # Accumulates reconciliation data across the whole batch run
@@ -122,6 +126,85 @@ class OCRPipeline:
                 )
         return files
 
+    def _render_pdf_page(self, page: fitz.Page, dpi: int = TARGET_DPI) -> Image.Image:
+        """Render one PDF page to a PIL image."""
+        mat = fitz.Matrix(dpi / 72, dpi / 72)
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        return Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+
+    def _lang_for_script(self, script: str) -> str:
+        if script == "Gujarati":
+            return "guj+eng"
+        if script == "Devanagari":
+            return "hin+mar+eng"
+        if script == "Latin":
+            return "eng"
+        return self.tess_lang
+
+    def _lang_for_page(self, src_file: Path, script: str) -> str:
+        name = src_file.name.lower()
+        if "enclosure" in name:
+            return "guj+eng"
+        return self._lang_for_script(script)
+
+    def _should_use_azure_review_lane(
+        self, src_file: Path, page_label: str, page_class: dict
+    ) -> bool:
+        """Route known handwriting/photo statement classes without misclassifying Gujarati print."""
+        name = src_file.name.lower()
+        is_image = src_file.suffix.lower() in {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".heic"}
+
+        if any(marker in name for marker in ["whatsapp", "written statement", "ace panchnama"]):
+            return True
+
+        if is_image and (
+            page_class["script"] == "Unknown" or page_class["script_confidence"] < 5.0
+        ):
+            return True
+
+        if page_class["script_confidence"] < 2.0 and any(
+            marker in name for marker in ["statement", "panchnama"]
+        ):
+            return True
+
+        return False
+
+    def _text_layer_is_trusted(self, page: fitz.Page, digital_text: str, page_label: str) -> bool:
+        """L1 trust gate: reject scanner garbage before skipping OCR."""
+        if not validate_text_layer(digital_text):
+            diag = text_layer_diagnostics(digital_text)
+            self._log(
+                "WARNING",
+                f"  {page_label}: Digital text layer rejected "
+                f"(chars={diag['chars']}, tokens={diag['alpha_token_count']}, "
+                f"sane={diag['sane_char_ratio']:.2f}). Forcing OCR.",
+            )
+            return False
+
+        try:
+            sample_image = self._render_pdf_page(page, dpi=150)
+            sample_image, osd_data = _triage_and_rotate(sample_image)
+            sample_text, sample_conf = run_tesseract(sample_image, self._lang_for_script(osd_data.get("script", "Unknown")))
+            if validate_text_layer(digital_text, sample_text):
+                self._log(
+                    "INFO",
+                    f"  {page_label}: Digital text layer trusted after OCR cross-check "
+                    f"(sample confidence {sample_conf}%).",
+                )
+                return True
+            self._log(
+                "WARNING",
+                f"  {page_label}: Digital text layer failed OCR cross-check. Forcing OCR.",
+            )
+            return False
+        except Exception as exc:
+            self._log(
+                "WARNING",
+                f"  {page_label}: Text-layer cross-check unavailable ({exc}); "
+                "rejecting embedded layer to force OCR.",
+            )
+            return False
+
     def _crop_and_retry(
         self,
         pil_image: Image.Image,
@@ -159,7 +242,7 @@ class OCRPipeline:
             return quarantine_dir / (src.stem + extension)
         return Path(self.output_folder) / (src.stem + extension)
 
-    def _save_claude_payload(
+    def _save_structured_payload(
         self, src: Path, combined_text: str, all_dfs: list[pd.DataFrame], status: str, exc_entry: dict
     ):
         """Generates a structured XML payload optimized for LLM downstream consumption."""
@@ -213,7 +296,7 @@ class OCRPipeline:
         with open(xml_path, "w", encoding="utf-8") as f:
             f.write("\n".join(xml_content))
             
-        self._log("INFO", f"  LLM Payload saved → {xml_path.name}")
+        self._log("INFO", f"  Structured payload saved -> {xml_path.name}")
 
     def _save_text_output(self, src: Path, combined_text: str, status: str):
         """Save the raw extracted text for quick review and downstream use."""
@@ -221,7 +304,7 @@ class OCRPipeline:
         os.makedirs(txt_path.parent, exist_ok=True)
         with open(txt_path, "w", encoding="utf-8") as f:
             f.write(combined_text)
-        self._log("INFO", f"  Text saved → {txt_path.name}")
+        self._log("INFO", f"  Text saved -> {txt_path.name}")
 
     def _save_tables_csv(self, src: Path, all_dfs: list[pd.DataFrame], status: str):
         """Save all extracted tables into one labeled CSV file."""
@@ -237,7 +320,7 @@ class OCRPipeline:
                 df.to_csv(f, index=False)
                 f.write("\n")
 
-        self._log("INFO", f"  Tables saved → {csv_path.name}")
+        self._log("INFO", f"  Tables saved -> {csv_path.name}")
 
     # ------------------------------------------------------------------
     # Per-page processing helpers
@@ -250,7 +333,7 @@ class OCRPipeline:
         page_num: int = 1,
     ) -> tuple[str, list[pd.DataFrame], bool, list[dict]]:
         """
-        Run the Local→Cloud pipeline on a single PIL Image.
+        Run the Local-to-Azure pipeline on a single PIL Image.
         Returns (text, dataframes, is_handwritten, entity_exceptions).
         """
         text = ""
@@ -265,14 +348,40 @@ class OCRPipeline:
         self._last_tables = 0
 
         # --- PATH 0: Layer 2 Triage & Layer 5 Handwriting Check ---
+        pil_image = normalize_image_for_ocr(pil_image)
         pil_image, osd_data = _triage_and_rotate(pil_image)
-        script_conf = osd_data.get('script_conf', 100.0)
-        
-        # Handwriting heuristic: exceptionally low script confidence
-        if script_conf < 2.0 and osd_data:
-            self._log("WARNING", f"  {page_label}: Handwriting detected (OSD script confidence {script_conf}). Bypassing OCR.")
-            self._last_engine = "Handwriting Lane"
-            return "[HANDWRITTEN PAGE - REQUIRES AI VISION LANE]", [], True, []
+        page_class = classify_page(osd_data)
+        script_conf = page_class["script_confidence"]
+
+        # Handwriting/photo statement pages use Azure and remain flagged.
+        if self._should_use_azure_review_lane(src_file, page_label, page_class):
+            self._log(
+                "WARNING",
+                f"  {page_label}: Handwriting/low-script-confidence page detected "
+                f"(script confidence {script_conf}). Routing to Azure review lane.",
+            )
+            self._last_engine = "Azure Review Lane"
+            self._last_conf = 0.0
+            try:
+                img_bytes = prepare_image_for_azure(pil_image)
+                azure_text, dfs = run_azure_ocr(img_bytes, self._get_azure_client(), page_num=page_num)
+                text = azure_text or "[HANDWRITTEN PAGE - AZURE REVIEW LANE RETURNED NO TEXT]"
+                if azure_text:
+                    self._log("INFO", f"  {page_label}: Azure review lane returned text.")
+                if dfs:
+                    self._last_tables = len(dfs)
+                    self._log("INFO", f"  {page_label}: Azure review lane returned {len(dfs)} table(s).")
+            except Exception as exc:
+                text = "[HANDWRITTEN PAGE - REQUIRES HUMAN REVIEW]"
+                self._log("ERROR", f"  {page_label}: Azure review lane failed: {exc}")
+            return text, dfs, True, [
+                {
+                    "table": "HANDWRITING_LANE",
+                    "row": "ALL",
+                    "note": "Handwritten or low-script-confidence page requires human sign-off",
+                    "data": {"script_confidence": script_conf},
+                }
+            ]
 
         # --- PATH 1: Balance Sheet Mode is ON (Force Azure) ---
         if self.balance_sheet:
@@ -315,7 +424,7 @@ class OCRPipeline:
                 msg = e.error.message if (hasattr(e, "error") and e.error) else str(e)
                 self._log(
                     "ERROR",
-                    f"  {page_label}: Azure API error — {msg}. Traceback: {traceback.format_exc()}. Falling back to Tesseract.",
+                    f"  {page_label}: Azure API error - {msg}. Traceback: {traceback.format_exc()}. Falling back to Tesseract.",
                 )
 
         # --- PATH 2: Normal Mode (Or Azure Failed) ---
@@ -326,14 +435,7 @@ class OCRPipeline:
             
             # --- R20: Dynamic Script Selection ---
             page_script = osd_data.get('script', 'Unknown')
-            if page_script == 'Gujarati':
-                dynamic_lang = 'guj+eng'
-            elif page_script == 'Devanagari':
-                dynamic_lang = 'hin+mar+eng'
-            elif page_script == 'Latin':
-                dynamic_lang = 'eng'
-            else:
-                dynamic_lang = self.tess_lang
+            dynamic_lang = self._lang_for_page(src_file, page_script)
                 
             self._log("INFO", f"  {page_label}: Dynamic Language Selection -> script: {page_script}, lang: {dynamic_lang}")
             
@@ -351,15 +453,15 @@ class OCRPipeline:
             if conf < self.risk_thresh:
                 self._log(
                     "WARNING",
-                    f"  {page_label}: HIGH RISK — Tesseract confidence {conf}%.",
+                    f"  {page_label}: HIGH RISK - Tesseract confidence {conf}%.",
                 )
             elif conf < self.warn_thresh:
                 self._log(
                     "WARNING",
-                    f"  {page_label}: WARNING — Tesseract confidence {conf}%. Sending to Azure.",
+                    f"  {page_label}: WARNING - Tesseract confidence {conf}%. Sending to Azure.",
                 )
             else:
-                self._log("INFO", f"  {page_label}: Tesseract confidence {conf}% — OK.")
+                self._log("INFO", f"  {page_label}: Tesseract confidence {conf}% - OK.")
 
             # Auto-detect tables
             has_table = detect_table_from_text(text)
@@ -414,7 +516,7 @@ class OCRPipeline:
                     )
                     self._log(
                         "ERROR",
-                        f"  {page_label}: Azure API error — {msg}. Falling back to Tesseract.",
+                        f"  {page_label}: Azure API error - {msg}. Falling back to Tesseract.",
                     )
 
         # --- PATH 3: R11 Exception-Driven Escalation ---
@@ -493,6 +595,8 @@ class OCRPipeline:
         all_text_parts = []
         all_dfs = []
         all_entity_exceptions = []
+        digital_text_layer_used = False
+        digital_text_layer_rejected = False
 
         for page_num in range(len(doc)):
             if self.stop_event.is_set():
@@ -504,11 +608,11 @@ class OCRPipeline:
             # --- Digital text extraction (PyMuPDF) ---
             digital_text = page.get_text("text").strip()
             if digital_text:
-                if validate_text_layer(digital_text):
+                if self._text_layer_is_trusted(page, digital_text, page_label):
                     self._log(
                         "INFO",
-                        f"  {page_label}: Digital text layer found and validated "
-                        f"({len(digital_text)} chars) — skipping OCR.",
+                        f"  {page_label}: Digital text layer found and trusted "
+                        f"({len(digital_text)} chars) - skipping OCR.",
                     )
 
                     self.current_metrics.append(
@@ -522,22 +626,33 @@ class OCRPipeline:
                     )
 
                     all_text_parts.append(digital_text)
+                    digital_text_layer_used = True
                     continue  # Skip OCR entirely for this page
                 else:
+                    digital_text_layer_rejected = True
                     self._log(
                         "WARNING",
-                        f"  {page_label}: Digital text layer rejected (garbage encoding). Forcing OCR."
+                        f"  {page_label}: Digital text layer rejected (trust gate). Forcing OCR."
                     )
 
             # --- Render scanned page to PIL Image at 300 DPI ---
-            mat = fitz.Matrix(TARGET_DPI / 72, TARGET_DPI / 72)  # 72 pt = 1 inch
-            pix = page.get_pixmap(matrix=mat, alpha=False)
-            pil_image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+            pil_image = self._render_pdf_page(page, dpi=TARGET_DPI)
 
             page_start = time.perf_counter()
             page_text, page_dfs, is_hw, entity_exc = self._process_pil_page(
                 pil_image, src, page_label, page_num=page_num + 1
             )
+            # Save flagged page image for human review if handwriting detected
+            # or critical entity exceptions were raised. Keep originals for audit.
+            if is_hw or entity_exc:
+                quarantine_dir = Path(self.output_folder) / "Quarantine" / src.stem
+                os.makedirs(quarantine_dir, exist_ok=True)
+                try:
+                    img_name = f"{src.stem}_page{page_num+1}_flag.png"
+                    pil_image.save(str(quarantine_dir / img_name))
+                    self._log("INFO", f"  {page_label}: Flagged page image saved -> {img_name}")
+                except Exception as e:
+                    self._log("WARNING", f"  {page_label}: Failed to save flagged page image: {e}")
             if is_hw:
                 self._doc_requires_vision = True
             if entity_exc:
@@ -587,22 +702,24 @@ class OCRPipeline:
         status, exc_entry = reconcile_document(
             src, combined, all_dfs, all_entity_exceptions, self.balance_sheet
         )
+        exc_entry["digital_text_layer_used"] = digital_text_layer_used
+        exc_entry["digital_text_layer_rejected"] = digital_text_layer_rejected
         if getattr(self, "_doc_requires_vision", False):
             status = "UNRECONCILED"
             exc_entry["status"] = "UNRECONCILED"
-            exc_entry["note"] = "Requires AI Vision Lane"
+            exc_entry["note"] = "Requires Azure review lane / human sign-off"
         self.exceptions_list.append(exc_entry)
 
         dest_label = "Quarantine" if status == "UNRECONCILED" else "Output"
         self._log(
             "WARNING" if status == "UNRECONCILED" else "INFO",
-            f"  '{src.name}': Reconciliation → {status} (routed to {dest_label}).",
+            f"  '{src.name}': Reconciliation -> {status} (routed to {dest_label}).",
         )
 
         if combined:
             self._save_text_output(src, combined, status)
             self._save_tables_csv(src, all_dfs, status)
-            self._save_claude_payload(src, combined, all_dfs, status, exc_entry)
+            self._save_structured_payload(src, combined, all_dfs, status, exc_entry)
 
         self._generate_pdf_report(src, total_time, total_pages, combined, status)
 
@@ -627,6 +744,17 @@ class OCRPipeline:
         page_text, page_dfs, is_hw, entity_exc = self._process_pil_page(pil_image, src, "Image")
         if is_hw:
             self._doc_requires_vision = True
+
+        # Save flagged image if exceptions present
+        if is_hw or entity_exc:
+            quarantine_dir = Path(self.output_folder) / "Quarantine" / src.stem
+            os.makedirs(quarantine_dir, exist_ok=True)
+            try:
+                img_name = f"{src.stem}_image_flag.png"
+                pil_image.save(str(quarantine_dir / img_name))
+                self._log("INFO", f"  Image: Flagged page image saved -> {img_name}")
+            except Exception as e:
+                self._log("WARNING", f"  Image: Failed to save flagged image: {e}")
 
         text_conf = getattr(self, "_last_conf", 0.0)
         engine_used = getattr(self, "_last_engine", "Tesseract")
@@ -658,19 +786,19 @@ class OCRPipeline:
         if getattr(self, "_doc_requires_vision", False):
             status = "UNRECONCILED"
             exc_entry["status"] = "UNRECONCILED"
-            exc_entry["note"] = "Requires AI Vision Lane"
+            exc_entry["note"] = "Requires Azure review lane / human sign-off"
         self.exceptions_list.append(exc_entry)
 
         dest_label = "Quarantine" if status == "UNRECONCILED" else "Output"
         self._log(
             "WARNING" if status == "UNRECONCILED" else "INFO",
-            f"  '{src.name}': Reconciliation → {status} (routed to {dest_label}).",
+            f"  '{src.name}': Reconciliation -> {status} (routed to {dest_label}).",
         )
 
         if combined_text:
             self._save_text_output(src, combined_text, status)
             self._save_tables_csv(src, page_dfs, status)
-            self._save_claude_payload(src, combined_text, page_dfs, status, exc_entry)
+            self._save_structured_payload(src, combined_text, page_dfs, status, exc_entry)
 
         self._generate_pdf_report(
             src, time.perf_counter() - start_time, 1, combined_text, status
@@ -804,7 +932,7 @@ class OCRPipeline:
             os.makedirs(report_path.parent, exist_ok=True)
             doc.save(str(report_path))
             doc.close()
-            self._log("INFO", f"  Report saved → {report_path.name}")
+            self._log("INFO", f"  Report saved -> {report_path.name}")
         except Exception as e:
             self._log("ERROR", f"Failed to generate PDF report: {e}")
 
@@ -864,6 +992,8 @@ class OCRPipeline:
 
         # Write machine-readable exceptions.json for the entire batch
         self._write_exceptions_json()
+        # Write the production gate report (R22)
+        self._write_production_gate_report()
 
     def _write_exceptions_json(self):
         """Serialise self.exceptions_list to exceptions.json in the output folder."""
@@ -876,8 +1006,23 @@ class OCRPipeline:
             unreconciled = len(self.exceptions_list) - reconciled
             self._log(
                 "INFO",
-                f"  Exceptions report saved → {json_path.name} "
+                f"  Exceptions report saved -> {json_path.name} "
                 f"({reconciled} RECONCILED, {unreconciled} UNRECONCILED)",
             )
         except Exception as e:
             self._log("ERROR", f"Failed to write exceptions.json: {e}")
+
+    def _write_production_gate_report(self):
+        """Generate and save the R22 production gate report (JSON)."""
+        try:
+            report = build_production_gate_report(self.exceptions_list)
+            import json
+
+            json_path = Path(self.output_folder) / "production_gate_report.json"
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(report, f, indent=2, ensure_ascii=False)
+
+            status = report.get("status", "FAIL")
+            self._log("INFO", f"  Production gate report saved -> {json_path.name} (status: {status})")
+        except Exception as e:
+            self._log("ERROR", f"Failed to write production gate report: {e}")

@@ -127,15 +127,34 @@ def run_azure_ocr(
             for col in df.columns:
                 if col in ("Page_Num", "Y_Coord"):
                     continue
+
                 def try_parse(val):
-                    if pd.isna(val):
+                    # Handle pandas objects (Series/DataFrame) and missing values safely
+                    try:
+                        # pd.isna may return a boolean or an array/Series
+                        is_na = pd.isna(val)
+                    except Exception:
+                        is_na = False
+
+                    if isinstance(is_na, (pd.Series, pd.DataFrame)):
+                        if getattr(is_na, "all", lambda: False)():
+                            return val
+                    else:
+                        if is_na:
+                            return val
+
+                    # Convert to string safely
+                    try:
+                        sval = str(val)
+                    except Exception:
                         return val
-                    if any(c.isdigit() for c in str(val)):
-                        parsed = parse_indian_currency(val)
+
+                    if any(c.isdigit() for c in sval):
+                        parsed = parse_indian_currency(sval)
                         if isinstance(parsed, float):
                             return parsed
                     return val
-                
+
                 df[col] = df[col].apply(try_parse)
 
             df = validate_row_math(df)

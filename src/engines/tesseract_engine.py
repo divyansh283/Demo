@@ -90,10 +90,12 @@ def _validate_requested_languages(tessdata_dir: Path, lang: str) -> None:
 def run_tesseract(pil_image: Image.Image, lang: str) -> tuple[str, float]:
     tessdata_dir = _resolve_tessdata_dir()
     _validate_requested_languages(tessdata_dir, lang)
-    tess_config = f'--tessdata-dir "{str(tessdata_dir)}"'
-    
+
+    # Rely on TESSDATA_PREFIX environment variable set in _resolve_tessdata_dir()
+    # Passing a quoted --tessdata-dir through pytesseract can cause stray quotes
+    # to be embedded in the path on Windows. Omit the config to avoid that.
     data = pytesseract.image_to_data(
-        pil_image, lang=lang, config=tess_config, output_type=pytesseract.Output.DICT
+        pil_image, lang=lang, output_type=pytesseract.Output.DICT
     )
 
     valid_confs = [
@@ -101,6 +103,6 @@ def run_tesseract(pil_image: Image.Image, lang: str) -> tuple[str, float]:
     ]
     avg_conf = (sum(valid_confs) / len(valid_confs)) if valid_confs else 0.0
 
-    text = pytesseract.image_to_string(pil_image, lang=lang, config=tess_config)
+    text = pytesseract.image_to_string(pil_image, lang=lang)
     text = filter_devanagari_noise(text)
     return text.strip(), round(avg_conf, 2)

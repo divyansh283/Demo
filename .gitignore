@@ -1,0 +1,30 @@
+# Python environments and caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+
+# Local OCR runtime folders
+OCR_Input/
+OCR_Output/
+OCR_Verification_Input/
+OCR_Verification_Output/
+
+# Generated OCR output from custom runs
+output/
+input/
+*.log
+OCR_ExceptionLog_*.txt
+exceptions.json
+production_gate_report.json
+
+# Local/debug helper files
+debug_tess.py
+run_pipeline.py
+
+# Editor and OS noise
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini

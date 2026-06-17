@@ -8,6 +8,24 @@ from src.utils.constants import TARGET_DPI
 # Register HEIC opener with Pillow
 pillow_heif.register_heif_opener()
 
+def normalize_image_for_ocr(pil_image: Image.Image) -> Image.Image:
+    if pil_image.mode not in ("RGB", "L"):
+        pil_image = pil_image.convert("RGB")
+
+    src_dpi = pil_image.info.get("dpi", (TARGET_DPI, TARGET_DPI))
+    src_dpi_x = src_dpi[0] if src_dpi[0] > 0 else TARGET_DPI
+    if src_dpi_x < TARGET_DPI:
+        scale = TARGET_DPI / src_dpi_x
+        new_w = max(1, int(pil_image.width * scale))
+        new_h = max(1, int(pil_image.height * scale))
+        pil_image = pil_image.resize((new_w, new_h), Image.LANCZOS)
+
+    if pil_image.mode == "L":
+        pil_image = pil_image.convert("RGB")
+
+    return pil_image
+
+
 def prepare_image_for_azure(pil_image: Image.Image) -> bytes:
     src_dpi = pil_image.info.get("dpi", (TARGET_DPI, TARGET_DPI))
     src_dpi_x = src_dpi[0] if src_dpi[0] > 0 else TARGET_DPI
@@ -24,6 +42,7 @@ def prepare_image_for_azure(pil_image: Image.Image) -> bytes:
     buf = io.BytesIO()
     pil_image.save(buf, format="PNG", dpi=(TARGET_DPI, TARGET_DPI))
     return buf.getvalue()
+
 
 def mask_stamp_ink(pil_image: Image.Image) -> Image.Image:
     if pil_image.mode != "RGB":
