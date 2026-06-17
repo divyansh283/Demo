@@ -917,10 +917,10 @@ class OCRPipeline:
             except Exception:
                 pass
 
-            for line in combined_text.split("\n"):
-                # Wrap long lines so they don't go off the PDF edge
-                wrapped_lines = textwrap.wrap(line, width=85) if line.strip() else [""]
-                for w_line in wrapped_lines:
+            normalized_text = combined_text.replace("\r\n", "\n").replace("\r", "\n")
+            paragraphs = [p.strip() for p in re.split(r"\n{2,}", normalized_text) if p.strip()]
+            for para in paragraphs:
+                for raw_line in para.split("\n"):
                     if y_pos > 800:  # Bottom margin
                         page = doc.new_page()
                         y_pos = 50
@@ -928,10 +928,20 @@ class OCRPipeline:
                             page.insert_font(
                                 fontname="freesans", fontfile=str(font_path)
                             )
-                    page.insert_text(
-                        (50, y_pos), w_line, fontname=txt_font, fontsize=10
-                    )
-                    y_pos += 12
+
+                    # Preserve explicit line breaks inside each paragraph and wrap long lines
+                    if raw_line.strip():
+                        wrapped_lines = textwrap.wrap(raw_line, width=95)
+                    else:
+                        wrapped_lines = [""]
+
+                    for w_line in wrapped_lines:
+                        page.insert_text(
+                            (50, y_pos), w_line, fontname=txt_font, fontsize=10
+                        )
+                        y_pos += 12
+
+                y_pos += 10
 
             report_path = self._output_path(src, "_human_report.pdf", status)
             os.makedirs(report_path.parent, exist_ok=True)
